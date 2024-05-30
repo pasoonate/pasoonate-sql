@@ -1,4 +1,77 @@
 DELIMITER $$
+CREATE FUNCTION `jdate2timestamp`(`year` INT(4), `month` INT(2), `day` INT(2), `hour` INT(2), `minute` INT(2), `second` INT(2)) RETURNS INT
+	NO SQL
+BEGIN
+	DECLARE ts INT DEFAULT 0;
+
+	SET ts = ((floor(((year * 682) - 110) / 2816) + ((year - 1) * 365) 
+		+ IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) 
+		+ (day - 1)) * 86400) + (hour * 3600) + (minute * 60) + second - 42531868800;
+
+	RETURN ts;
+END $$
+
+CREATE FUNCTION `timestamp2jdatetime`(`ts` INT) RETURNS CHAR(19)
+	NO SQL
+BEGIN
+	DECLARE base BIGINT DEFAULT ts + 42531868800;
+	DECLARE second INT DEFAULT mod(base, 60);
+	DECLARE minute INT DEFAULT floor(mod(base, 3600) / 60);
+	DECLARE hour INT DEFAULT floor(mod(base, 86400) / 3600);
+	DECLARE days INT DEFAULT floor(base / 86400);
+	DECLARE year INT DEFAULT floor(days / 365);
+	DECLARE dayofyear INT DEFAULT days - (floor(((year * 682) - 110) / 2816) + ((year - 1) * 365));
+	DECLARE month INT DEFAULT floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
+	DECLARE day INT DEFAULT dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
+
+	IF month > 12 THEN
+		SET day = day + IF(jleap(year) = 1, 0, 1);
+		SET month = month - 12;
+		SET year = year + 1;
+	END IF;
+
+	IF month = 12 AND day > 29 AND jleap(year) = 0 THEN
+		SET day = 1;
+		SET month = 1;
+		SET year = year + 1;
+	END IF;
+
+	RETURN CONCAT(year, '/', LPAD(month, 2, 0), '/', LPAD(day, 2, 0), ' ', LPAD(hour, 2, 0), ':', LPAD(minute, 2, 0), ':', LPAD(second, 2, 0));
+END $$
+
+CREATE FUNCTION `timestamp2jdate`(`ts` INT) RETURNS CHAR(10)
+	NO SQL
+BEGIN
+	DECLARE base BIGINT DEFAULT ts + 42531868800;
+	DECLARE days INT DEFAULT floor(base / 86400);
+	DECLARE year INT DEFAULT floor(days / 365);
+	DECLARE dayofyear INT DEFAULT days - (floor(((year * 682) - 110) / 2816) + ((year - 1) * 365));
+	DECLARE month INT DEFAULT floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
+	DECLARE day INT DEFAULT dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
+
+	IF month > 12 THEN
+		SET day = day + IF(jleap(year) = 1, 0, 1);
+		SET month = month - 12;
+		SET year = year + 1;
+	END IF;
+
+	IF month = 12 AND day > 29 AND jleap(year) = 0 THEN
+		SET day = 1;
+		SET month = 1;
+		SET year = year + 1;
+	END IF;
+
+	RETURN CONCAT(year, '/', LPAD(month, 2, 0), '/', LPAD(day, 2, 0));
+END $$
+
+CREATE FUNCTION `jleap`(`year` INT(4)) RETURNS TINYINT(1)
+	NO SQL
+BEGIN
+	RETURN IF(year < 1343, (year % 33) IN (1,5,9,13,17,21,26,30), (year % 33) IN (1,5,9,13,17,22,26,30));
+END$$
+DELIMITER ;
+
+DELIMITER $$
 CREATE FUNCTION `DateToJulianDay`(`year` INT(4), `month` INT(2), `day` INT(2), `hour` INT(2), `minute` INT(2), `second` INT(2)) RETURNS decimal(11,4)
     NO SQL
 BEGIN

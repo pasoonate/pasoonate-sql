@@ -2,11 +2,10 @@ DELIMITER $$
 CREATE FUNCTION `jdate2timestamp`(`year` INT(4), `month` INT(2), `day` INT(2), `hour` INT(2), `minute` INT(2), `second` INT(2)) RETURNS INT
 	NO SQL
 BEGIN
-	DECLARE ts INT DEFAULT 0;
-
-	SET ts = ((floor(((year * 682) - 110) / 2816) + ((year - 1) * 365) 
-		+ IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) 
-		+ (day - 1)) * 86400) + (hour * 3600) + (minute * 60) + second - 42531868800;
+	DECLARE ts BIGINT DEFAULT 0;
+	
+	SET ts = ((floor((year - 1) * 365.24219878) + IF(month <= 7, ((month - 1) * 31), (((month - 1) * 30) + 6)) + (day - 1) + IF(jleap(year - 1) = 1, 1, 0)) * 86400)
+		   + (hour * 3600) + (minute * 60) + second - 42531868800;
 
 	RETURN ts;
 END $$
@@ -19,22 +18,27 @@ BEGIN
 	DECLARE minute INT DEFAULT floor(mod(base, 3600) / 60);
 	DECLARE hour INT DEFAULT floor(mod(base, 86400) / 3600);
 	DECLARE days INT DEFAULT floor(base / 86400);
+	DECLARE fyear INT DEFAULT floor(days / 365.24219878);
 	DECLARE year INT DEFAULT floor(days / 365);
-	DECLARE dayofyear INT DEFAULT days - (floor(((year * 682) - 110) / 2816) + ((year - 1) * 365));
-	DECLARE month INT DEFAULT floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
-	DECLARE day INT DEFAULT dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
+	DECLARE dayOfYear INT DEFAULT days - floor(fyear * 365.24219878);
+	DECLARE month INT DEFAULT 0;
+	DECLARE day INT DEFAULT 0;
+	
+	IF jleap(fyear) = 1 THEN
+		SET dayOfYear = dayOfYear - 1;
+	END IF;
 
-	IF month > 12 THEN
-		SET day = day + IF(jleap(year) = 1, 0, 1);
-		SET month = month - 12;
+	IF dayOfYear >= 365 AND jleap(year) = 0 THEN 
+		SET dayOfYear = 0;
 		SET year = year + 1;
 	END IF;
 
-	IF month = 12 AND day > 29 AND jleap(year) = 0 THEN
-		SET day = 1;
-		SET month = 1;
+	IF year = fyear THEN
 		SET year = year + 1;
 	END IF;
+
+    SET month = floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
+	SET day = dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
 
 	RETURN CONCAT(year, '/', LPAD(month, 2, 0), '/', LPAD(day, 2, 0), ' ', LPAD(hour, 2, 0), ':', LPAD(minute, 2, 0), ':', LPAD(second, 2, 0));
 END $$
@@ -44,22 +48,27 @@ CREATE FUNCTION `timestamp2jdate`(`ts` INT) RETURNS CHAR(10)
 BEGIN
 	DECLARE base BIGINT DEFAULT ts + 42531868800;
 	DECLARE days INT DEFAULT floor(base / 86400);
+	DECLARE fyear INT DEFAULT floor(days / 365.24219878);
 	DECLARE year INT DEFAULT floor(days / 365);
-	DECLARE dayofyear INT DEFAULT days - (floor(((year * 682) - 110) / 2816) + ((year - 1) * 365));
-	DECLARE month INT DEFAULT floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
-	DECLARE day INT DEFAULT dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
+	DECLARE dayOfYear INT DEFAULT days - floor(fyear * 365.24219878);
+	DECLARE month INT DEFAULT 0;
+	DECLARE day INT DEFAULT 0;
+	
+	IF jleap(fyear) = 1 THEN
+		SET dayOfYear = dayOfYear - 1;
+	END IF;
 
-	IF month > 12 THEN
-		SET day = day + IF(jleap(year) = 1, 0, 1);
-		SET month = month - 12;
+	IF dayOfYear >= 365 AND jleap(year) = 0 THEN 
+		SET dayOfYear = 0;
 		SET year = year + 1;
 	END IF;
 
-	IF month = 12 AND day > 29 AND jleap(year) = 0 THEN
-		SET day = 1;
-		SET month = 1;
+	IF year = fyear THEN
 		SET year = year + 1;
 	END IF;
+
+	SET month = floor(IF(dayofyear <= 186, dayOfYear / 31, (dayofyear - 6) / 30)) + 1;
+	SET day = dayofyear - IF(month <= 7, (month - 1) * 31, ((month - 1) * 30) + 6) + 1;
 
 	RETURN CONCAT(year, '/', LPAD(month, 2, 0), '/', LPAD(day, 2, 0));
 END $$
@@ -168,11 +177,9 @@ DELIMITER $$
 CREATE FUNCTION `JDate`(date datetime) RETURNS varchar(25) CHARSET utf8mb4
     NO SQL
 BEGIN
-	declare year  int default JYEAR(date);
-    declare monthName varchar(20) default JMONTHNAME(date);
-    declare day   int default JDAY(date);
-    
-	RETURN concat(year, ' ', monthName, ' ', day);
+	DECLARE timestamp INT DEFAULT unix_timestamp(date);
+
+	RETURN timestamp2jdate(timestamp);
 END$$
 DELIMITER ;
 
@@ -180,54 +187,9 @@ DELIMITER $$
 CREATE FUNCTION `JDay`(date datetime) RETURNS int(11)
     NO SQL
 BEGIN
-	declare timestamp int default unix_timestamp(date);
-	declare julianDay decimal(11,4) default TimestampToJulianDay(timestamp);
-	declare hour int default GetHoursOfJulianDay(julianDay);
-    declare minute int default GetMinutesOfJulianDay(julianDay);
-    declare second int default GetSecondsOfJulianDay(julianDay);
-    declare depoch decimal(11,4);
-    declare cycle int;
-    declare cyear int;
-    declare ycycle int;
-	declare aux1 int;
-	declare aux2 int;
-	declare year int;
-    declare month int;
-    declare day int;
-    declare yday decimal(11,4);
-    declare result varchar(20);
-    
-    set julianDay = JulianDayWithoutTime(julianDay);
-    set julianDay = floor(julianDay) + 0.5;
-    set depoch = julianDay - JulianDayWithoutTime(DateToJulianDay(475, 1, 1, hour, minute, second));
-    set cycle = floor(depoch / 1029983);
-	set cyear = MOD(depoch, 1029983);
-    
-	IF cyear = 1029982 THEN
-    	SET ycycle = 2820;
-	ELSE
-    	SET aux1 = floor(cyear / 366);
-    	SET aux2 = MOD(cyear, 366);
-    	SET ycycle = floor(((2134 * aux1) + (2816 * aux2) + 2815) / 1028522) + aux1 + 1;
-	END IF;
+	DECLARE timestamp INT DEFAULT unix_timestamp(date);
 
-	SET year = ycycle + (2820 * cycle) + 474;
-
-	IF year <= 0 THEN
-    	SET year = year - 1;
-	END IF;
-
-	SET yday = (julianDay - JulianDayWithoutTime(DateToJulianDay(year, 1, 1, hour, minute, second))) + 1;
-
-	IF yday <= 186 THEN
-		SET month = ceil(yday / 31);
-	ELSE
-		SET month = ceil((yday - 6) / 30);
-	END IF;
-
-	SET day = (julianDay - JulianDayWithoutTime(DateToJulianDay(year, month, 1, hour, minute, second))) + 1;
-    
-	RETURN day;
+	RETURN SUBSTR(timestamp2jdate(timestamp), 9, 2);
 END$$
 DELIMITER ;
 
@@ -235,52 +197,9 @@ DELIMITER $$
 CREATE FUNCTION `JMonth`(date datetime) RETURNS int(11)
     NO SQL
 BEGIN
-	declare timestamp int default unix_timestamp(date);
-	declare julianDay decimal(11,4) default TimestampToJulianDay(timestamp);
-	declare hour int default GetHoursOfJulianDay(julianDay);
-    declare minute int default GetMinutesOfJulianDay(julianDay);
-    declare second int default GetSecondsOfJulianDay(julianDay);
-    declare depoch decimal(11,4);
-    declare cycle int;
-    declare cyear int;
-    declare ycycle int;
-	declare aux1 int;
-	declare aux2 int;
-	declare year int;
-    declare month int;
-    declare day int;
-    declare yday decimal(11,4);
-    declare result varchar(20);
-    
-    set julianDay = JulianDayWithoutTime(julianDay);
-    set julianDay = floor(julianDay) + 0.5;
-    set depoch = julianDay - JulianDayWithoutTime(DateToJulianDay(475, 1, 1, hour, minute, second));
-    set cycle = floor(depoch / 1029983);
-	set cyear = MOD(depoch, 1029983);
-    
-	IF cyear = 1029982 THEN
-    	SET ycycle = 2820;
-	ELSE
-    	SET aux1 = floor(cyear / 366);
-    	SET aux2 = MOD(cyear, 366);
-    	SET ycycle = floor(((2134 * aux1) + (2816 * aux2) + 2815) / 1028522) + aux1 + 1;
-	END IF;
+	DECLARE timestamp INT DEFAULT unix_timestamp(date);
 
-	SET year = ycycle + (2820 * cycle) + 474;
-
-	IF year <= 0 THEN
-    	SET year = year - 1;
-	END IF;
-
-	SET yday = (julianDay - JulianDayWithoutTime(DateToJulianDay(year, 1, 1, hour, minute, second))) + 1;
-
-	IF yday <= 186 THEN
-		SET month = ceil(yday / 31);
-	ELSE
-		SET month = ceil((yday - 6) / 30);
-	END IF;
-    
-	RETURN month;
+	RETURN SUBSTR(timestamp2jdate(timestamp), 6, 2);
 END$$
 DELIMITER ;
 
@@ -288,44 +207,9 @@ DELIMITER $$
 CREATE FUNCTION `JYear`(date datetime) RETURNS int(11)
     NO SQL
 BEGIN
-	declare timestamp int default unix_timestamp(date);
-	declare julianDay decimal(11,4) default TimestampToJulianDay(timestamp);
-	declare hour int default GetHoursOfJulianDay(julianDay);
-    declare minute int default GetMinutesOfJulianDay(julianDay);
-    declare second int default GetSecondsOfJulianDay(julianDay);
-    declare depoch decimal(11,4);
-    declare cycle int;
-    declare cyear int;
-    declare ycycle int;
-	declare aux1 int;
-	declare aux2 int;
-	declare year int;
-    declare month int;
-    declare day int;
-    declare yday decimal(11,4);
-    declare result varchar(20);
-    
-    set julianDay = JulianDayWithoutTime(julianDay);
-    set julianDay = floor(julianDay) + 0.5;
-    set depoch = julianDay - JulianDayWithoutTime(DateToJulianDay(475, 1, 1, hour, minute, second));
-    set cycle = floor(depoch / 1029983);
-	set cyear = MOD(depoch, 1029983);
-    
-	IF cyear = 1029982 THEN
-    	SET ycycle = 2820;
-	ELSE
-    	SET aux1 = floor(cyear / 366);
-    	SET aux2 = MOD(cyear, 366);
-    	SET ycycle = floor(((2134 * aux1) + (2816 * aux2) + 2815) / 1028522) + aux1 + 1;
-	END IF;
+	DECLARE timestamp INT DEFAULT unix_timestamp(date);
 
-	SET year = ycycle + (2820 * cycle) + 474;
-
-	IF year <= 0 THEN
-    	SET year = year - 1;
-	END IF;
-    
-	RETURN year;
+	RETURN SUBSTR(timestamp2jdate(timestamp), 1, 4);
 END$$
 DELIMITER ;
 
